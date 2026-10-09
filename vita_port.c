@@ -29,6 +29,7 @@
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
 #include <vitaGL.h>
+#include "shader_patch.h"
 
 // Force 32-bit ARM softfp calling convention for functions crossing the N900 ABI boundary
 #define SOFTFP __attribute__((pcs("aapcs")))
@@ -1374,7 +1375,7 @@ int main(int argc, char *argv[]) {
         scePowerSetGpuClockFrequency(222);
         scePowerSetGpuXbarClockFrequency(166);
     }
-    vita_log("=== Bounce Evolution Vita Port v5.1 Starting (verbose=%d) ===", g_verbose);
+    vita_log("=== Bounce Evolution Vita Port v5.2 Starting (verbose=%d) ===", g_verbose);
 #ifdef __OPTIMIZE__
     vita_log("[BUILD] optimized build");
 #else
@@ -1493,6 +1494,25 @@ static char *split_blur_varyings(const char *src) {
     return out;
 }
 
+// commons/defines.sh from the user's (untouched) data; needed by the guarded varyings.
+static char *g_defines_txt = NULL;
+static int g_defines_tried = 0;
+static const char *get_defines_txt(void) {
+    if (!g_defines_tried) {
+        g_defines_tried = 1;
+        FILE *f = fopen("ux0:data/BounceEvolution/shaders/commons/defines.sh", "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+            if (sz > 0 && sz < 65536 && (g_defines_txt = (char *)malloc((size_t)sz + 1))) {
+                if (fread(g_defines_txt, 1, (size_t)sz, f) != (size_t)sz) { free(g_defines_txt); g_defines_txt = NULL; }
+                else g_defines_txt[sz] = 0;
+            }
+            fclose(f);
+        }
+        if (!g_defines_txt) vita_log("[SHADER] commons/defines.sh not found - shaders may fail to compile");
+    }
+    return g_defines_txt;
+}
 void __wrap_glShaderSource(GLuint sh, GLsizei count, const GLchar *const *string, const GLint *length) {
     if (g_verbose && count > 0 && string && string[0]) {
         int ln = (length && length[0] >= 0 && length[0] < 240) ? length[0] : 240;
@@ -1516,7 +1536,13 @@ void __wrap_glShaderSource(GLuint sh, GLsizei count, const GLchar *const *string
                 pos += len;
             }
             all[pos] = 0;
-            if (strstr(all, "V_BlurTexCoord")) {
+            int force_send = 0;
+            {   // stock N900 shaders -> Vita-compatible (see shader_patch.h)
+                size_t pn = 0;
+                char *sp = sp_patch_source(all, pos, get_defines_txt(), &pn);
+                if (sp) { free(all); all = sp; force_send = 1; vlog("[SHADER PATCH] sh=%u: stock varyings/CRLF fixed", (unsigned)sh); }
+            }
+            if (force_send || strstr(all, "V_BlurTexCoord")) {
                 char *patched = split_blur_varyings(all);
                 free(all);
                 if (patched) {
